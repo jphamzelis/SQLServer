@@ -1,0 +1,19 @@
+{
+    "name": "LS_MetadataDB_SqlServer",
+    "type": "Microsoft.DataFactory/factories/linkedservices",
+    "properties": {
+        "annotations": [],
+        "type": "SqlServer",
+        "typeProperties": {
+            "connectionString": {
+                "type": "AzureKeyVaultSecret",
+                "store": {
+                    "referenceName": "LS_KeyVault",
+                    "type": "LinkedServiceReference"
+                },
+                "secretName": "MetadataDB-ConnectionString"
+            }
+        },
+        "description": "Metadata database for pipeline configuration and execution logging"
+    }
+}

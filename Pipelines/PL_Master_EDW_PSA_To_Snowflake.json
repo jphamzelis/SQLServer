@@ -1,0 +1,287 @@
+{
+    "name": "PL_Master_EDW_PSA_To_Snowflake",
+    "properties": {
+        "description": "Master pipeline to orchestrate ingestion of all EDW_PSA tables to Snowflake",
+        "activities": [
+            {
+                "name": "GetTableList",
+                "type": "Lookup",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SqlServerSource",
+                        "sqlReaderQuery": "SELECT SourceSchema, SourceTable, DestinationSchema, DestinationTable, LoadType, WatermarkColumn, Priority FROM MetadataDB.dbo.TableConfig WHERE IsActive = 1 ORDER BY Priority, SourceSchema, SourceTable",
+                        "queryTimeout": "02:00:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_MetadataDB_Generic",
+                        "type": "DatasetReference",
+                        "parameters": {
+                            "schemaName": "dbo",
+                            "tableName": "TableConfig"
+                        }
+                    },
+                    "firstRowOnly": false
+                }
+            },
+            {
+                "name": "LogMasterStart",
+                "type": "SqlServerStoredProcedure",
+                "dependsOn": [
+                    {
+                        "activity": "GetTableList",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "storedProcedureName": "dbo.LogMasterExecutionStart",
+                    "storedProcedureParameters": {
+                        "PipelineRunId": {
+                            "value": {
+                                "value": "@pipeline().RunId",
+                                "type": "Expression"
+                            },
+                            "type": "String"
+                        },
+                        "TableCount": {
+                            "value": {
+                                "value": "@length(activity('GetTableList').output.value)",
+                                "type": "Expression"
+                            },
+                            "type": "Int32"
+                        }
+                    }
+                },
+                "linkedServiceName": {
+                    "referenceName": "LS_MetadataDB_SqlServer",
+                    "type": "LinkedServiceReference"
+                }
+            },
+            {
+                "name": "ForEachTable",
+                "type": "ForEach",
+                "dependsOn": [
+                    {
+                        "activity": "LogMasterStart",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "items": {
+                        "value": "@activity('GetTableList').output.value",
+                        "type": "Expression"
+                    },
+                    "batchCount": 5,
+                    "activities": [
+                        {
+                            "name": "ExecuteChildPipeline",
+                            "type": "ExecutePipeline",
+                            "dependsOn": [],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "pipeline": {
+                                    "referenceName": "PL_Copy_Table_EDW_PSA_To_Snowflake",
+                                    "type": "PipelineReference"
+                                },
+                                "waitOnCompletion": true,
+                                "parameters": {
+                                    "sourceSchema": {
+                                        "value": "@item().SourceSchema",
+                                        "type": "Expression"
+                                    },
+                                    "sourceTable": {
+                                        "value": "@item().SourceTable",
+                                        "type": "Expression"
+                                    },
+                                    "destinationSchema": {
+                                        "value": "@item().DestinationSchema",
+                                        "type": "Expression"
+                                    },
+                                    "destinationTable": {
+                                        "value": "@item().DestinationTable",
+                                        "type": "Expression"
+                                    },
+                                    "loadType": {
+                                        "value": "@item().LoadType",
+                                        "type": "Expression"
+                                    },
+                                    "watermarkColumn": {
+                                        "value": "@item().WatermarkColumn",
+                                        "type": "Expression"
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "LogMasterSuccess",
+                "type": "SqlServerStoredProcedure",
+                "dependsOn": [
+                    {
+                        "activity": "ForEachTable",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "storedProcedureName": "dbo.LogMasterExecutionSuccess",
+                    "storedProcedureParameters": {
+                        "PipelineRunId": {
+                            "value": {
+                                "value": "@pipeline().RunId",
+                                "type": "Expression"
+                            },
+                            "type": "String"
+                        }
+                    }
+                },
+                "linkedServiceName": {
+                    "referenceName": "LS_MetadataDB_SqlServer",
+                    "type": "LinkedServiceReference"
+                }
+            },
+            {
+                "name": "SendSuccessNotification",
+                "type": "WebActivity",
+                "dependsOn": [
+                    {
+                        "activity": "LogMasterSuccess",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "url": "https://your-teams-webhook-url",
+                    "method": "POST",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "body": {
+                        "value": "{\n  \"@type\": \"MessageCard\",\n  \"@context\": \"https://schema.org/extensions\",\n  \"summary\": \"EDW_PSA Ingestion Completed\",\n  \"themeColor\": \"00FF00\",\n  \"sections\": [{\n    \"activityTitle\": \"EDW_PSA to Snowflake Ingestion\",\n    \"activitySubtitle\": \"Pipeline Execution Completed Successfully\",\n    \"facts\": [{\n      \"name\": \"Pipeline Run ID\",\n      \"value\": \"@{pipeline().RunId}\"\n    }, {\n      \"name\": \"Start Time\",\n      \"value\": \"@{utcnow()}\"\n    }, {\n      \"name\": \"Tables Processed\",\n      \"value\": \"@{length(activity('GetTableList').output.value)}\"\n    }]\n  }]\n}",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "LogMasterFailure",
+                "type": "SqlServerStoredProcedure",
+                "dependsOn": [
+                    {
+                        "activity": "ForEachTable",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "storedProcedureName": "dbo.LogMasterExecutionFailure",
+                    "storedProcedureParameters": {
+                        "PipelineRunId": {
+                            "value": {
+                                "value": "@pipeline().RunId",
+                                "type": "Expression"
+                            },
+                            "type": "String"
+                        },
+                        "ErrorMessage": {
+                            "value": {
+                                "value": "@activity('ForEachTable').error.message",
+                                "type": "Expression"
+                            },
+                            "type": "String"
+                        }
+                    }
+                },
+                "linkedServiceName": {
+                    "referenceName": "LS_MetadataDB_SqlServer",
+                    "type": "LinkedServiceReference"
+                }
+            },
+            {
+                "name": "SendFailureNotification",
+                "type": "WebActivity",
+                "dependsOn": [
+                    {
+                        "activity": "LogMasterFailure",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "url": "https://your-teams-webhook-url",
+                    "method": "POST",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "body": {
+                        "value": "{\n  \"@type\": \"MessageCard\",\n  \"@context\": \"https://schema.org/extensions\",\n  \"summary\": \"EDW_PSA Ingestion Failed\",\n  \"themeColor\": \"FF0000\",\n  \"sections\": [{\n    \"activityTitle\": \"EDW_PSA to Snowflake Ingestion\",\n    \"activitySubtitle\": \"Pipeline Execution Failed\",\n    \"facts\": [{\n      \"name\": \"Pipeline Run ID\",\n      \"value\": \"@{pipeline().RunId}\"\n    }, {\n      \"name\": \"Error Time\",\n      \"value\": \"@{utcnow()}\"\n    }, {\n      \"name\": \"Error Message\",\n      \"value\": \"@{activity('ForEachTable').error.message}\"\n    }]\n  }]\n}",
+                        "type": "Expression"
+                    }
+                }
+            }
+        ],
+        "parameters": {},
+        "annotations": [],
+        "lastPublishTime": "2024-01-01T00:00:00Z"
+    },
+    "type": "Microsoft.DataFactory/factories/pipelines"
+}
