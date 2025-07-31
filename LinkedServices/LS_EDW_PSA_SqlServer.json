@@ -1,0 +1,19 @@
+{
+    "name": "LS_EDW_PSA_SqlServer",
+    "type": "Microsoft.DataFactory/factories/linkedservices",
+    "properties": {
+        "annotations": [],
+        "type": "SqlServer",
+        "typeProperties": {
+            "connectionString": {
+                "type": "AzureKeyVaultSecret",
+                "store": {
+                    "referenceName": "LS_KeyVault",
+                    "type": "LinkedServiceReference"
+                },
+                "secretName": "EDW-PSA-ConnectionString"
+            }
+        },
+        "description": "SQL Server connection to EDW_PSA database for source data ingestion"
+    }
+}

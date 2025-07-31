@@ -1,0 +1,19 @@
+{
+    "name": "LS_Snowflake_Target",
+    "type": "Microsoft.DataFactory/factories/linkedservices",
+    "properties": {
+        "annotations": [],
+        "type": "Snowflake",
+        "typeProperties": {
+            "connectionString": {
+                "type": "AzureKeyVaultSecret",
+                "store": {
+                    "referenceName": "LS_KeyVault",
+                    "type": "LinkedServiceReference"
+                },
+                "secretName": "Snowflake-ConnectionString"
+            }
+        },
+        "description": "Snowflake connection for EDW_PSA data ingestion target"
+    }
+}

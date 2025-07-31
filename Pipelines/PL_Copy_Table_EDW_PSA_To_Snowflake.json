@@ -1,0 +1,552 @@
+{
+    "name": "PL_Copy_Table_EDW_PSA_To_Snowflake",
+    "properties": {
+        "description": "Child pipeline to copy individual table from EDW_PSA to Snowflake",
+        "activities": [
+            {
+                "name": "LogStart",
+                "type": "SqlServerStoredProcedure",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "storedProcedureName": "dbo.LogExecutionStart",
+                    "storedProcedureParameters": {
+                        "PipelineRunId": {
+                            "value": {
+                                "value": "@pipeline().RunId",
+                                "type": "Expression"
+                            },
+                            "type": "String"
+                        },
+                        "SourceSchema": {
+                            "value": {
+                                "value": "@pipeline().parameters.sourceSchema",
+                                "type": "Expression"
+                            },
+                            "type": "String"
+                        },
+                        "SourceTable": {
+                            "value": {
+                                "value": "@pipeline().parameters.sourceTable",
+                                "type": "Expression"
+                            },
+                            "type": "String"
+                        }
+                    }
+                },
+                "linkedServiceName": {
+                    "referenceName": "LS_MetadataDB_SqlServer",
+                    "type": "LinkedServiceReference"
+                }
+            },
+            {
+                "name": "GetSourceRowCount",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "LogStart",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SqlServerSource",
+                        "sqlReaderQuery": {
+                            "value": "SELECT COUNT(*) as SourceRowCount FROM [@{pipeline().parameters.sourceSchema}].[@{pipeline().parameters.sourceTable}]",
+                            "type": "Expression"
+                        },
+                        "queryTimeout": "02:00:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_EDW_PSA_Generic",
+                        "type": "DatasetReference",
+                        "parameters": {
+                            "schemaName": {
+                                "value": "@pipeline().parameters.sourceSchema",
+                                "type": "Expression"
+                            },
+                            "tableName": {
+                                "value": "@pipeline().parameters.sourceTable",
+                                "type": "Expression"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "name": "CopyTableData",
+                "type": "Copy",
+                "dependsOn": [
+                    {
+                        "activity": "GetSourceRowCount",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "2.00:00:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 300,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SqlServerSource",
+                        "additionalColumns": [
+                            {
+                                "name": "ADF_LoadDate",
+                                "value": {
+                                    "value": "@utcnow()",
+                                    "type": "Expression"
+                                }
+                            },
+                            {
+                                "name": "ADF_PipelineRunId",
+                                "value": {
+                                    "value": "@pipeline().RunId",
+                                    "type": "Expression"
+                                }
+                            }
+                        ],
+                        "sqlReaderQuery": {
+                            "value": "@if(\n  and(\n    not(equals(pipeline().parameters.loadType, 'FULL')),\n    not(empty(pipeline().parameters.watermarkColumn))\n  ),\n  concat(\n    'SELECT * FROM [', pipeline().parameters.sourceSchema, '].[', pipeline().parameters.sourceTable, '] WHERE [', pipeline().parameters.watermarkColumn, '] > ''', \n    activity('GetLastWatermark').output.firstRow.LastWatermarkValue, \n    ''''\n  ),\n  concat('SELECT * FROM [', pipeline().parameters.sourceSchema, '].[', pipeline().parameters.sourceTable, ']')\n)",
+                            "type": "Expression"
+                        },
+                        "queryTimeout": "02:00:00",
+                        "partitionOption": "None"
+                    },
+                    "sink": {
+                        "type": "SnowflakeSink",
+                        "preCopyScript": {
+                            "value": "@if(equals(pipeline().parameters.loadType, 'FULL'), concat('TRUNCATE TABLE ', pipeline().parameters.destinationSchema, '.', pipeline().parameters.destinationTable), '')",
+                            "type": "Expression"
+                        },
+                        "importSettings": {
+                            "type": "SnowflakeImportCopyCommand",
+                            "copyOptions": {
+                                "FORCE": "TRUE",
+                                "ON_ERROR": "ABORT_STATEMENT"
+                            }
+                        }
+                    },
+                    "enableStaging": true,
+                    "stagingSettings": {
+                        "linkedServiceName": {
+                            "referenceName": "LS_AzureStorage",
+                            "type": "LinkedServiceReference"
+                        },
+                        "path": {
+                            "value": "staging/edw-psa-ingestion/@{pipeline().parameters.sourceSchema}/@{pipeline().parameters.sourceTable}/@{formatDateTime(utcnow(), 'yyyy/MM/dd/HH')}",
+                            "type": "Expression"
+                        },
+                        "enableCompression": true
+                    },
+                    "parallelCopies": 4,
+                    "dataIntegrationUnits": 8,
+                    "enableSkipIncompatibleRow": false,
+                    "validateDataConsistency": true,
+                    "logSettings": {
+                        "enableCopyActivityLog": true,
+                        "copyActivityLogSettings": {
+                            "logLevel": "Warning",
+                            "enableReliableLogging": false
+                        },
+                        "logLocationSettings": {
+                            "linkedServiceName": {
+                                "referenceName": "LS_AzureStorage",
+                                "type": "LinkedServiceReference"
+                            },
+                            "path": {
+                                "value": "logs/edw-psa-ingestion/@{pipeline().parameters.sourceSchema}/@{pipeline().parameters.sourceTable}/@{formatDateTime(utcnow(), 'yyyy/MM/dd')}",
+                                "type": "Expression"
+                            }
+                        }
+                    }
+                },
+                "inputs": [
+                    {
+                        "referenceName": "DS_EDW_PSA_Generic",
+                        "type": "DatasetReference",
+                        "parameters": {
+                            "schemaName": {
+                                "value": "@pipeline().parameters.sourceSchema",
+                                "type": "Expression"
+                            },
+                            "tableName": {
+                                "value": "@pipeline().parameters.sourceTable",
+                                "type": "Expression"
+                            }
+                        }
+                    }
+                ],
+                "outputs": [
+                    {
+                        "referenceName": "DS_Snowflake_Generic",
+                        "type": "DatasetReference",
+                        "parameters": {
+                            "schemaName": {
+                                "value": "@pipeline().parameters.destinationSchema",
+                                "type": "Expression"
+                            },
+                            "tableName": {
+                                "value": "@pipeline().parameters.destinationTable",
+                                "type": "Expression"
+                            }
+                        }
+                    }
+                ]
+            },
+            {
+                "name": "GetDestinationRowCount",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "CopyTableData",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SnowflakeSource",
+                        "query": {
+                            "value": "SELECT COUNT(*) as DestinationRowCount FROM @{pipeline().parameters.destinationSchema}.@{pipeline().parameters.destinationTable}",
+                            "type": "Expression"
+                        }
+                    },
+                    "dataset": {
+                        "referenceName": "DS_Snowflake_Generic",
+                        "type": "DatasetReference",
+                        "parameters": {
+                            "schemaName": {
+                                "value": "@pipeline().parameters.destinationSchema",
+                                "type": "Expression"
+                            },
+                            "tableName": {
+                                "value": "@pipeline().parameters.destinationTable",
+                                "type": "Expression"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "name": "ValidateRowCount",
+                "type": "IfCondition",
+                "dependsOn": [
+                    {
+                        "activity": "GetDestinationRowCount",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "userProperties": [],
+                "typeProperties": {
+                    "expression": {
+                        "value": "@if(equals(pipeline().parameters.loadType, 'FULL'), \n  equals(activity('GetSourceRowCount').output.firstRow.SourceRowCount, activity('GetDestinationRowCount').output.firstRow.DestinationRowCount),\n  greater(activity('CopyTableData').output.rowsCopied, 0)\n)",
+                        "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                        {
+                            "name": "LogSuccess",
+                            "type": "SqlServerStoredProcedure",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.12:00:00",
+                                "retry": 0,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "storedProcedureName": "dbo.LogExecutionSuccess",
+                                "storedProcedureParameters": {
+                                    "PipelineRunId": {
+                                        "value": {
+                                            "value": "@pipeline().RunId",
+                                            "type": "Expression"
+                                        },
+                                        "type": "String"
+                                    },
+                                    "RowsCopied": {
+                                        "value": {
+                                            "value": "@activity('CopyTableData').output.rowsCopied",
+                                            "type": "Expression"
+                                        },
+                                        "type": "Int64"
+                                    },
+                                    "SourceRowCount": {
+                                        "value": {
+                                            "value": "@activity('GetSourceRowCount').output.firstRow.SourceRowCount",
+                                            "type": "Expression"
+                                        },
+                                        "type": "Int64"
+                                    },
+                                    "DestinationRowCount": {
+                                        "value": {
+                                            "value": "@activity('GetDestinationRowCount').output.firstRow.DestinationRowCount",
+                                            "type": "Expression"
+                                        },
+                                        "type": "Int64"
+                                    }
+                                }
+                            },
+                            "linkedServiceName": {
+                                "referenceName": "LS_MetadataDB_SqlServer",
+                                "type": "LinkedServiceReference"
+                            }
+                        },
+                        {
+                            "name": "UpdateWatermark",
+                            "type": "SqlServerStoredProcedure",
+                            "dependsOn": [
+                                {
+                                    "activity": "LogSuccess",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "policy": {
+                                "timeout": "0.12:00:00",
+                                "retry": 0,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "storedProcedureName": "dbo.UpdateWatermark",
+                                "storedProcedureParameters": {
+                                    "SourceSchema": {
+                                        "value": {
+                                            "value": "@pipeline().parameters.sourceSchema",
+                                            "type": "Expression"
+                                        },
+                                        "type": "String"
+                                    },
+                                    "SourceTable": {
+                                        "value": {
+                                            "value": "@pipeline().parameters.sourceTable",
+                                            "type": "Expression"
+                                        },
+                                        "type": "String"
+                                    },
+                                    "NewWatermarkValue": {
+                                        "value": {
+                                            "value": "@utcnow()",
+                                            "type": "Expression"
+                                        },
+                                        "type": "String"
+                                    }
+                                }
+                            },
+                            "linkedServiceName": {
+                                "referenceName": "LS_MetadataDB_SqlServer",
+                                "type": "LinkedServiceReference"
+                            }
+                        }
+                    ],
+                    "ifFalseActivities": [
+                        {
+                            "name": "LogValidationFailure",
+                            "type": "SqlServerStoredProcedure",
+                            "dependsOn": [],
+                            "policy": {
+                                "timeout": "0.12:00:00",
+                                "retry": 0,
+                                "retryIntervalInSeconds": 30,
+                                "secureOutput": false,
+                                "secureInput": false
+                            },
+                            "userProperties": [],
+                            "typeProperties": {
+                                "storedProcedureName": "dbo.LogExecutionFailure",
+                                "storedProcedureParameters": {
+                                    "PipelineRunId": {
+                                        "value": {
+                                            "value": "@pipeline().RunId",
+                                            "type": "Expression"
+                                        },
+                                        "type": "String"
+                                    },
+                                    "ErrorMessage": {
+                                        "value": {
+                                            "value": "Row count validation failed. Source: @{activity('GetSourceRowCount').output.firstRow.SourceRowCount}, Destination: @{activity('GetDestinationRowCount').output.firstRow.DestinationRowCount}, Copied: @{activity('CopyTableData').output.rowsCopied}",
+                                            "type": "Expression"
+                                        },
+                                        "type": "String"
+                                    }
+                                }
+                            },
+                            "linkedServiceName": {
+                                "referenceName": "LS_MetadataDB_SqlServer",
+                                "type": "LinkedServiceReference"
+                            }
+                        },
+                        {
+                            "name": "FailPipeline",
+                            "type": "Fail",
+                            "dependsOn": [
+                                {
+                                    "activity": "LogValidationFailure",
+                                    "dependencyConditions": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            ],
+                            "userProperties": [],
+                            "typeProperties": {
+                                "message": {
+                                    "value": "Row count validation failed for table @{pipeline().parameters.sourceSchema}.@{pipeline().parameters.sourceTable}",
+                                    "type": "Expression"
+                                },
+                                "errorCode": "VALIDATION_FAILED"
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "name": "LogFailure",
+                "type": "SqlServerStoredProcedure",
+                "dependsOn": [
+                    {
+                        "activity": "CopyTableData",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "storedProcedureName": "dbo.LogExecutionFailure",
+                    "storedProcedureParameters": {
+                        "PipelineRunId": {
+                            "value": {
+                                "value": "@pipeline().RunId",
+                                "type": "Expression"
+                            },
+                            "type": "String"
+                        },
+                        "ErrorMessage": {
+                            "value": {
+                                "value": "@activity('CopyTableData').error.message",
+                                "type": "Expression"
+                            },
+                            "type": "String"
+                        }
+                    }
+                },
+                "linkedServiceName": {
+                    "referenceName": "LS_MetadataDB_SqlServer",
+                    "type": "LinkedServiceReference"
+                }
+            },
+            {
+                "name": "GetLastWatermark",
+                "type": "Lookup",
+                "dependsOn": [
+                    {
+                        "activity": "LogStart",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "SqlServerSource",
+                        "sqlReaderQuery": {
+                            "value": "SELECT ISNULL(LastWatermarkValue, '1900-01-01') as LastWatermarkValue FROM MetadataDB.dbo.TableConfig WHERE SourceSchema = '@{pipeline().parameters.sourceSchema}' AND SourceTable = '@{pipeline().parameters.sourceTable}'",
+                            "type": "Expression"
+                        },
+                        "queryTimeout": "02:00:00",
+                        "partitionOption": "None"
+                    },
+                    "dataset": {
+                        "referenceName": "DS_MetadataDB_Generic",
+                        "type": "DatasetReference",
+                        "parameters": {
+                            "schemaName": "dbo",
+                            "tableName": "TableConfig"
+                        }
+                    }
+                }
+            }
+        ],
+        "parameters": {
+            "sourceSchema": {
+                "type": "string",
+                "defaultValue": "dbo"
+            },
+            "sourceTable": {
+                "type": "string"
+            },
+            "destinationSchema": {
+                "type": "string",
+                "defaultValue": "EDW_PSA"
+            },
+            "destinationTable": {
+                "type": "string"
+            },
+            "loadType": {
+                "type": "string",
+                "defaultValue": "FULL"
+            },
+            "watermarkColumn": {
+                "type": "string"
+            }
+        },
+        "annotations": [],
+        "lastPublishTime": "2024-01-01T00:00:00Z"
+    },
+    "type": "Microsoft.DataFactory/factories/pipelines"
+}
